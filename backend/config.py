@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment."""
 
     secret_key: str = "dev-secret-key-change-in-production"
+    database_url: str | None = None
     groq_api_key: str | None = None
     paddleocr_lang: str = "en"
     paddleocr_use_angle_cls: bool = True

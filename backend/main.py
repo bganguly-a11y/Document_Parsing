@@ -9,6 +9,8 @@ from services.pdf_extractor import extract_text
 from services.translator import translate_text, SUPPORTED_LANGUAGES
 from services.summarizer import summarize_text
 from config import get_settings
+from db import get_db, engine
+from models import Base, Document
 
 app = FastAPI(
     title="Document Parsing API",
@@ -27,6 +29,7 @@ app.add_middleware(
 
 
 class ExtractedTextResponse(BaseModel):
+    document_id: str
     filename: str
     extracted_text: str
     extraction_method: str
@@ -35,11 +38,13 @@ class ExtractedTextResponse(BaseModel):
 class TranslateRequest(BaseModel):
     text: str
     target_language: str
+    document_id: str | None = None
 
 
 class TranslateResponse(BaseModel):
     target_language: str
     translated_text: str
+    document_id: str | None = None
 
 
 class LanguagesResponse(BaseModel):
@@ -48,10 +53,22 @@ class LanguagesResponse(BaseModel):
 
 class SummarizeRequest(BaseModel):
     text: str
+    document_id: str | None = None
 
 
 class SummarizeResponse(BaseModel):
     summary: str
+    document_id: str | None = None
+
+
+class DocumentResponse(BaseModel):
+    id: str
+    filename: str
+    extraction_method: str
+    extracted_text: str
+    translated_language: str | None
+    translated_text: str | None
+    summary_text: str | None
 
 
 def validate_pdf(file: UploadFile) -> None:
@@ -66,6 +83,12 @@ def validate_pdf(file: UploadFile) -> None:
 @app.get("/")
 def root():
     return {"message": "Document Parsing API", "docs": "/docs"}
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    # Simple, migration-free setup for local development.
+    Base.metadata.create_all(bind=engine)
 
 
 @app.get("/api/languages", response_model=LanguagesResponse)
@@ -120,7 +143,20 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     extracted_text, extraction_method = extract_text(content, file.filename)
 
+    with get_db() as db:
+        doc = Document(
+            filename=file.filename,
+            content_type=file.content_type,
+            file_bytes=content,
+            extracted_text=extracted_text,
+            extraction_method=extraction_method,
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
     return ExtractedTextResponse(
+        document_id=doc.id,
         filename=file.filename,
         extracted_text=extracted_text,
         extraction_method=extraction_method,
@@ -136,29 +172,82 @@ async def translate_endpoint(body: TranslateRequest):
             detail=f"Unsupported language. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
         )
 
-    if not body.text or not body.text.strip():
+    text = body.text
+    if (not text or not text.strip()) and body.document_id:
+        with get_db() as db:
+            doc = db.get(Document, body.document_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            text = doc.extracted_text
+
+    if not text or not text.strip():
         raise HTTPException(status_code=400, detail="No text to translate")
 
-    translated_text = translate_text(body.text, body.target_language)
+    translated_text = translate_text(text, body.target_language)
+
+    if body.document_id:
+        with get_db() as db:
+            doc = db.get(Document, body.document_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            doc.translated_language = body.target_language
+            doc.translated_text = translated_text
+            db.add(doc)
+            db.commit()
 
     return TranslateResponse(
         target_language=body.target_language,
         translated_text=translated_text,
+        document_id=body.document_id,
     )
 
 
 @app.post("/api/summarize", response_model=SummarizeResponse)
 async def summarize_endpoint(body: SummarizeRequest):
     """Summarize text using an LLM."""
-    if not body.text or not body.text.strip():
+    text = body.text
+    if (not text or not text.strip()) and body.document_id:
+        with get_db() as db:
+            doc = db.get(Document, body.document_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            text = doc.extracted_text
+
+    if not text or not text.strip():
         raise HTTPException(status_code=400, detail="No text to summarize")
 
     try:
-        summary = summarize_text(body.text)
+        summary = summarize_text(text)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         msg = str(e) if str(e) else "Summarization failed. Check GROQ_API_KEY and try again."
         raise HTTPException(status_code=502, detail=msg)
 
-    return SummarizeResponse(summary=summary)
+    if body.document_id:
+        with get_db() as db:
+            doc = db.get(Document, body.document_id)
+            if not doc:
+                raise HTTPException(status_code=404, detail="Document not found")
+            doc.summary_text = summary
+            db.add(doc)
+            db.commit()
+
+    return SummarizeResponse(summary=summary, document_id=body.document_id)
+
+
+@app.get("/api/documents/{document_id}", response_model=DocumentResponse)
+def get_document(document_id: str):
+    with get_db() as db:
+        doc = db.get(Document, document_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        return DocumentResponse(
+            id=doc.id,
+            filename=doc.filename,
+            extraction_method=doc.extraction_method,
+            extracted_text=doc.extracted_text,
+            translated_language=doc.translated_language,
+            translated_text=doc.translated_text,
+            summary_text=doc.summary_text,
+        )

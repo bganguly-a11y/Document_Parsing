@@ -48,19 +48,23 @@ export async function uploadPdf(file) {
   return res.json()
 }
 
-export async function translate(text, targetLang) {
+export async function translate(text, targetLang, documentId = null) {
   return request('/translate', {
     method: 'POST',
     body: JSON.stringify({
       text,
       target_language: targetLang,
+      document_id: documentId,
     }),
   })
 }
 
-export async function summarize(text) {
+export async function summarize(text, documentId = null) {
   return request('/summarize', {
     method: 'POST',
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      text,
+      document_id: documentId,
+    }),
   })
 }

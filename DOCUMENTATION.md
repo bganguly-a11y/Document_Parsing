@@ -59,6 +59,8 @@ Parsing_Document_Application/
 ├── backend/
 │   ├── main.py              # FastAPI app, routes
 │   ├── config.py            # Settings (OCR, upload limits, etc.)
+│   ├── db.py                # SQLAlchemy engine/session
+│   ├── models.py            # DB models (documents)
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── services/
@@ -104,6 +106,10 @@ Create `.env`:
 ```env
 # OCR (PaddleOCR)
 PADDLEOCR_LANG=en
+
+# PostgreSQL (required for persistence)
+# You can use `postgresql://...` and the backend will normalize it to `postgresql+psycopg://...`.
+DATABASE_URL=postgresql://user:password@localhost:5432/document_parsing
 
 # Optional: where PaddleX/PaddleOCR stores models/cache.
 # If unset, the backend uses `backend/.cache/paddlex`.
@@ -155,6 +161,7 @@ Upload a PDF and extract text.
 **Response:**
 ```json
 {
+  "document_id": "0f5b1c2e-3d4a-4c76-9b7c-2d77a8f5b1b1",
   "filename": "sample.pdf",
   "extracted_text": "...",
   "extraction_method": "pymupdf"
@@ -172,7 +179,8 @@ Translate text to the target language.
 ```json
 {
   "text": "Text to translate",
-  "target_language": "es"
+  "target_language": "es",
+  "document_id": "0f5b1c2e-3d4a-4c76-9b7c-2d77a8f5b1b1"
 }
 ```
 
@@ -180,7 +188,8 @@ Translate text to the target language.
 ```json
 {
   "target_language": "es",
-  "translated_text": "..."
+  "translated_text": "...",
+  "document_id": "0f5b1c2e-3d4a-4c76-9b7c-2d77a8f5b1b1"
 }
 ```
 
@@ -190,20 +199,25 @@ Summarize text using an LLM (Groq / Llama 3.1).
 **Request body:**
 ```json
 {
-  "text": "Text to summarize"
+  "text": "Text to summarize",
+  "document_id": "0f5b1c2e-3d4a-4c76-9b7c-2d77a8f5b1b1"
 }
 ```
 
 **Response:**
 ```json
 {
-  "summary": "Concise summary of the text..."
+  "summary": "Concise summary of the text...",
+  "document_id": "0f5b1c2e-3d4a-4c76-9b7c-2d77a8f5b1b1"
 }
 ```
 
 **Errors:**
 - `400`: No text to summarize
 - `503`: GROQ_API_KEY not set or LLM error
+
+### `GET /api/documents/{document_id}`
+Fetch the stored document metadata + extracted/translated/summarized text.
 
 ---
 

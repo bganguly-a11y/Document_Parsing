@@ -72,7 +72,7 @@ function App() {
     setTranslateLoading(true)
     setTranslated(null)
     try {
-      const data = await translate(extracted.extracted_text, targetLang)
+      const data = await translate(extracted.extracted_text, targetLang, extracted.document_id)
       setTranslated(data)
     } catch (e) {
       const msg = e.response?.data?.detail || e.message || 'Translation failed'
@@ -88,7 +88,7 @@ function App() {
     setSummary(null)
     setFileError('')
     try {
-      const data = await summarize(extracted.extracted_text)
+      const data = await summarize(extracted.extracted_text, extracted.document_id)
       setSummary(data)
     } catch (e) {
       const msg = e.response?.data?.detail || e.message || 'Summarization failed'
