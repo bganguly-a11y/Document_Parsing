@@ -15,7 +15,7 @@ The Document Parsing application allows users to upload PDF files, extract text 
 └─────────────────┘     └──────────────────┘
          │                         │
          │                         ├── PyMuPDF / PyPDF2 (text-based PDFs)
-         │                         └── Pytesseract (image/scanned PDFs)
+         │                         └── PaddleOCR (image/scanned PDFs)
          │                         ├── deep-translator (translation)
          │                         └── Groq LLM (summarization)
 ```
@@ -34,7 +34,7 @@ The backend automatically selects the extraction method:
 | PDF Type           | Condition                              | Extraction Method |
 |--------------------|----------------------------------------|-------------------|
 | Text-based PDF     | Extracted text length ≥ 50 characters  | **PyMuPDF**       |
-| Image/scanned PDF  | Extracted text length &lt; 50 characters | **Pytesseract** (OCR) |
+| Image/scanned PDF  | Extracted text length &lt; 50 characters | **PaddleOCR** (OCR) |
 | Fallback           | OCR fails                              | **PyPDF2**        |
 
 ### 3. Translation
@@ -43,7 +43,7 @@ The backend automatically selects the extraction method:
 - Long texts are split into chunks to respect API limits (~2000 chars per request).
 
 ### Supported Languages
-English, Spanish, French, German, Italian, Portuguese, Hindi, Japanese, Chinese (Simplified), Korean, Arabic, Russian.
+The app loads a large list of supported languages from Google Translate via `deep-translator` (including many Indian languages like Bengali, Kannada, Telugu, Tamil, Malayalam, Marathi, Gujarati, Punjabi, Assamese, Urdu, Nepali, etc.).
 
 ### 4. Summarization
 - User clicks the **Summary** button after extracting text.
@@ -58,7 +58,7 @@ English, Spanish, French, German, Italian, Portuguese, Hindi, Japanese, Chinese 
 Parsing_Document_Application/
 ├── backend/
 │   ├── main.py              # FastAPI app, routes
-│   ├── config.py            # Settings (Tesseract, upload limits, etc.)
+│   ├── config.py            # Settings (OCR, upload limits, etc.)
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── services/
@@ -85,12 +85,10 @@ Parsing_Document_Application/
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- **Tesseract OCR** (required for image-based PDFs)
+- **PaddleOCR** (required for image-based/scanned PDFs; downloads models on first use)
 
-#### Install Tesseract
-- **macOS**: `brew install tesseract`
-- **Ubuntu/Debian**: `sudo apt install tesseract-ocr`
-- **Windows**: Download from [GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
+#### Install PaddleOCR (backend dependency)
+PaddleOCR is installed via `pip install -r requirements.txt`. On first OCR run it may download model files and can take a minute.
 
 ### Backend
 
@@ -104,7 +102,15 @@ pip install -r requirements.txt
 Create `.env`:
 
 ```env
-TESSERACT_CMD=/usr/bin/tesseract   # Optional; auto-detected on PATH
+# OCR (PaddleOCR)
+PADDLEOCR_LANG=en
+
+# Optional: where PaddleX/PaddleOCR stores models/cache.
+# If unset, the backend uses `backend/.cache/paddlex`.
+PADDLE_PDX_CACHE_HOME=
+
+# Optional: skip connectivity check of model hosters (recommended in restricted networks).
+PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=true
 GROQ_API_KEY=your-groq-api-key     # Required for summarization; get free key at https://console.groq.com
 ```
 
@@ -204,7 +210,7 @@ Summarize text using an LLM (Groq / Llama 3.1).
 ## Deployment Notes
 
 1. **CORS**: Update `allow_origins` in `main.py` with your frontend URL.
-2. **Tesseract**: Ensure Tesseract is installed on the server (for image-based PDFs).
+2. **PaddleOCR models/cache**: Ensure the server can write to `PADDLE_PDX_CACHE_HOME` (or let it default to `backend/.cache/paddlex`) so model downloads and caching work.
 3. **Groq API Key**: Set `GROQ_API_KEY` in `.env` for summarization (free tier at https://console.groq.com).
 4. **Translation**: For heavy production use, consider a paid API (DeepL, Google Cloud Translation).
 

@@ -3,8 +3,9 @@ uvicorn[standard]==0.32.1
 python-multipart==0.0.18
 pymupdf==1.25.1
 pypdf2==3.0.1
-pytesseract==0.3.13
 Pillow==11.0.0
+paddleocr==3.4.0
+paddlepaddle==3.3.0
 deep-translator==1.11.4
 groq>=0.13.0
 pydantic-settings==2.6.1

@@ -71,14 +71,42 @@ def root():
 @app.get("/api/languages", response_model=LanguagesResponse)
 def get_languages():
     """Return supported target languages for translation."""
-    return LanguagesResponse(languages=SUPPORTED_LANGUAGES)
+    # Keep a small set of common choices at the top for UX, then include the rest.
+    preferred_order = [
+        "en",  # English
+        "hi",  # Hindi
+        # Indian languages
+        "bn",  # Bengali
+        "kn",  # Kannada
+        "te",  # Telugu
+        "ta",  # Tamil
+        "ml",  # Malayalam
+        "mr",  # Marathi
+        "gu",  # Gujarati
+        "pa",  # Punjabi
+        "ur",  # Urdu
+        "as",  # Assamese
+        "ne",  # Nepali
+    ]
+
+    languages: dict[str, str] = {}
+    for code in preferred_order:
+        name = SUPPORTED_LANGUAGES.get(code)
+        if name:
+            languages[code] = name
+
+    for code, name in SUPPORTED_LANGUAGES.items():
+        if code not in languages:
+            languages[code] = name
+
+    return LanguagesResponse(languages=languages)
 
 
 @app.post("/api/upload", response_model=ExtractedTextResponse)
 async def upload_pdf(file: UploadFile = File(...)):
     """
     Upload a PDF file. Validates file type, extracts text using PyMuPDF/PyPDF2
-    for text-based PDFs or pytesseract for image-based PDFs.
+    for text-based PDFs or PaddleOCR for image-based PDFs.
     """
     validate_pdf(file)
 

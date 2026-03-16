@@ -27,3 +27,6 @@ node_modules/
 # Build
 dist/
 build/
+
+# PaddleOCR / PaddleX cache (models, temp files)
+backend/.cache/
