@@ -230,6 +230,4 @@ Fetch the stored document metadata + extracted/translated/summarized text.
 
 ---
 
-## License
 
-MIT
