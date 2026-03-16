@@ -6,7 +6,7 @@ The Document Parsing application allows users to upload PDF files, extract text 
 
 ---
 
-## Architecture
+## Architecture 
 
 ```
 ┌─────────────────┐     ┌──────────────────┐
