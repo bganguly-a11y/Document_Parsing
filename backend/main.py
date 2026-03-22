@@ -1,5 +1,7 @@
 """FastAPI application for document parsing with text extraction and translation."""
 from pathlib import Path
+import uuid
+from dataclasses import dataclass
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +11,6 @@ from services.pdf_extractor import extract_text
 from services.translator import translate_text, SUPPORTED_LANGUAGES
 from services.summarizer import summarize_text
 from config import get_settings
-from db import get_db, engine
-from models import Base, Document
 
 app = FastAPI(
     title="Document Parsing API",
@@ -19,6 +19,7 @@ app = FastAPI(
 )
 
 settings = get_settings()
+UPLOADS_DIR = Path(__file__).parent / "uploads"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"],
@@ -71,6 +72,23 @@ class DocumentResponse(BaseModel):
     summary_text: str | None
 
 
+@dataclass
+class Document:
+    id: str
+    filename: str
+    content_type: str | None
+    file_bytes: bytes
+    extraction_method: str
+    extracted_text: str
+    translated_language: str | None = None
+    translated_text: str | None = None
+    summary_text: str | None = None
+
+
+# Simple in-memory document store (resets on app restart).
+document_store: dict[str, Document] = {}
+
+
 def validate_pdf(file: UploadFile) -> None:
     """Validate that uploaded file is PDF. Raises HTTPException if not."""
     if not file.filename:
@@ -80,6 +98,13 @@ def validate_pdf(file: UploadFile) -> None:
         raise HTTPException(status_code=400, detail="Upload .pdf file only")
 
 
+def fetch_doc_or_404(document_id: str) -> Document:
+    doc = document_store.get(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
 @app.get("/")
 def root():
     return {"message": "Document Parsing API", "docs": "/docs"}
@@ -87,8 +112,8 @@ def root():
 
 @app.on_event("startup")
 def _startup() -> None:
-    # Simple, migration-free setup for local development.
-    Base.metadata.create_all(bind=engine)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    document_store.clear()
 
 
 @app.get("/api/languages", response_model=LanguagesResponse)
@@ -143,17 +168,21 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     extracted_text, extraction_method = extract_text(content, file.filename)
 
-    with get_db() as db:
-        doc = Document(
-            filename=file.filename,
-            content_type=file.content_type,
-            file_bytes=content,
-            extracted_text=extracted_text,
-            extraction_method=extraction_method,
-        )
-        db.add(doc)
-        db.commit()
-        db.refresh(doc)
+    doc = Document(
+        id=str(uuid.uuid4()),
+        filename=file.filename,
+        content_type=file.content_type,
+        file_bytes=content,
+        extracted_text=extracted_text,
+        extraction_method=extraction_method,
+    )
+    # Persist the uploaded PDF to disk for easy access.
+    safe_name = Path(file.filename).name  # strip any path info
+    file_path = UPLOADS_DIR / f"{doc.id}_{safe_name}"
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    document_store[doc.id] = doc
 
     return ExtractedTextResponse(
         document_id=doc.id,
@@ -174,11 +203,8 @@ async def translate_endpoint(body: TranslateRequest):
 
     text = body.text
     if (not text or not text.strip()) and body.document_id:
-        with get_db() as db:
-            doc = db.get(Document, body.document_id)
-            if not doc:
-                raise HTTPException(status_code=404, detail="Document not found")
-            text = doc.extracted_text
+        doc = fetch_doc_or_404(body.document_id)
+        text = doc.extracted_text
 
     if not text or not text.strip():
         raise HTTPException(status_code=400, detail="No text to translate")
@@ -186,14 +212,10 @@ async def translate_endpoint(body: TranslateRequest):
     translated_text = translate_text(text, body.target_language)
 
     if body.document_id:
-        with get_db() as db:
-            doc = db.get(Document, body.document_id)
-            if not doc:
-                raise HTTPException(status_code=404, detail="Document not found")
-            doc.translated_language = body.target_language
-            doc.translated_text = translated_text
-            db.add(doc)
-            db.commit()
+        doc = fetch_doc_or_404(body.document_id)
+        doc.translated_language = body.target_language
+        doc.translated_text = translated_text
+        document_store[doc.id] = doc
 
     return TranslateResponse(
         target_language=body.target_language,
@@ -207,11 +229,8 @@ async def summarize_endpoint(body: SummarizeRequest):
     """Summarize text using an LLM."""
     text = body.text
     if (not text or not text.strip()) and body.document_id:
-        with get_db() as db:
-            doc = db.get(Document, body.document_id)
-            if not doc:
-                raise HTTPException(status_code=404, detail="Document not found")
-            text = doc.extracted_text
+        doc = fetch_doc_or_404(body.document_id)
+        text = doc.extracted_text
 
     if not text or not text.strip():
         raise HTTPException(status_code=400, detail="No text to summarize")
@@ -225,29 +244,22 @@ async def summarize_endpoint(body: SummarizeRequest):
         raise HTTPException(status_code=502, detail=msg)
 
     if body.document_id:
-        with get_db() as db:
-            doc = db.get(Document, body.document_id)
-            if not doc:
-                raise HTTPException(status_code=404, detail="Document not found")
-            doc.summary_text = summary
-            db.add(doc)
-            db.commit()
+        doc = fetch_doc_or_404(body.document_id)
+        doc.summary_text = summary
+        document_store[doc.id] = doc
 
     return SummarizeResponse(summary=summary, document_id=body.document_id)
 
 
 @app.get("/api/documents/{document_id}", response_model=DocumentResponse)
 def get_document(document_id: str):
-    with get_db() as db:
-        doc = db.get(Document, document_id)
-        if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
-        return DocumentResponse(
-            id=doc.id,
-            filename=doc.filename,
-            extraction_method=doc.extraction_method,
-            extracted_text=doc.extracted_text,
-            translated_language=doc.translated_language,
-            translated_text=doc.translated_text,
-            summary_text=doc.summary_text,
-        )
+    doc = fetch_doc_or_404(document_id)
+    return DocumentResponse(
+        id=doc.id,
+        filename=doc.filename,
+        extraction_method=doc.extraction_method,
+        extracted_text=doc.extracted_text,
+        translated_language=doc.translated_language,
+        translated_text=doc.translated_text,
+        summary_text=doc.summary_text,
+    )
