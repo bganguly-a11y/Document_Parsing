@@ -7,7 +7,7 @@ pymupdf==1.25.1
 pypdf2==3.0.1
 Pillow==11.0.0
 paddleocr==3.4.0
-paddlepaddle==3.2.2
+paddlepaddle==2.6.2
 deep-translator==1.11.4
 groq>=0.13.0
 pydantic-settings==2.6.1
