@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://document-parsing-4.onrender.com/api/$1" }
+  ]
+}
