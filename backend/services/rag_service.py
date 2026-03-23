@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import uuid
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 
@@ -13,8 +15,12 @@ try:
 except ImportError:  # pragma: no cover - handled at runtime
     Groq = None  # type: ignore[assignment]
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+except ImportError:  # pragma: no cover - handled at runtime
+    QdrantClient = None  # type: ignore[assignment]
+    FieldCondition = Filter = MatchValue = None  # type: ignore[assignment]
 
 from config import get_settings
 
@@ -31,6 +37,8 @@ EMBED_CACHE_DIR = (
     else (BASE_DIR / ".cache" / "fastembed")
 )
 MAX_CONTEXT_CHARS = 10_000
+TOKEN_PATTERN = re.compile(r"\b\w+\b")
+FALLBACK_INDEX: dict[str, list[dict[str, object]]] = {}
 
 
 def prepare_rag_directories() -> None:
@@ -41,6 +49,7 @@ def prepare_rag_directories() -> None:
 
 def reset_rag_store() -> None:
     """Clear the local vector store so it stays in sync with the in-memory app state."""
+    FALLBACK_INDEX.clear()
     if VECTOR_DB_DIR.exists():
         shutil.rmtree(VECTOR_DB_DIR, ignore_errors=True)
     VECTOR_DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,6 +59,8 @@ def reset_rag_store() -> None:
 @lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
     """Return a local Qdrant client configured with a free embedding model."""
+    if QdrantClient is None:
+        raise RuntimeError("qdrant-client is not installed in the current environment.")
     prepare_rag_directories()
     os.environ.setdefault("FASTEMBED_CACHE_PATH", str(EMBED_CACHE_DIR))
     client = QdrantClient(path=str(VECTOR_DB_DIR))
@@ -86,13 +97,55 @@ def split_text_into_chunks(text: str) -> list[str]:
     return chunks
 
 
+def _tokenize(text: str) -> list[str]:
+    return TOKEN_PATTERN.findall(text.lower())
+
+
+def _store_fallback_chunks(document_id: str, filename: str, chunks: list[str]) -> None:
+    FALLBACK_INDEX[document_id] = [
+        {
+            "text": chunk,
+            "chunk_index": idx,
+            "filename": filename,
+            "tokens": Counter(_tokenize(chunk)),
+        }
+        for idx, chunk in enumerate(chunks)
+    ]
+
+
+def _retrieve_fallback_chunks(document_id: str, question: str) -> list[dict[str, object]]:
+    question_tokens = Counter(_tokenize(question))
+    if not question_tokens:
+        return []
+
+    chunks = FALLBACK_INDEX.get(document_id, [])
+    scored: list[dict[str, object]] = []
+    for chunk in chunks:
+        chunk_tokens = chunk["tokens"]
+        overlap = sum(min(question_tokens[token], chunk_tokens.get(token, 0)) for token in question_tokens)
+        if overlap <= 0:
+            continue
+        score = overlap / max(sum(question_tokens.values()), 1)
+        scored.append(
+            {
+                "text": chunk["text"],
+                "score": round(score, 4),
+                "chunk_index": chunk["chunk_index"],
+            }
+        )
+
+    scored.sort(key=lambda item: (-float(item["score"]), int(item["chunk_index"])))
+    return scored[:settings.rag_top_k]
+
+
 def index_document(document_id: str, filename: str, text: str) -> int:
     """Embed document chunks and store them in the local vector database."""
     chunks = split_text_into_chunks(text)
     if not chunks:
         return 0
 
-    client = get_qdrant_client()
+    _store_fallback_chunks(document_id, filename, chunks)
+
     metadata = [
         {
             "document_id": document_id,
@@ -102,31 +155,38 @@ def index_document(document_id: str, filename: str, text: str) -> int:
         for idx in range(len(chunks))
     ]
     ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{document_id}:{idx}")) for idx in range(len(chunks))]
-    client.add(
-        collection_name=settings.rag_collection_name,
-        documents=chunks,
-        metadata=metadata,
-        ids=ids,
-    )
+    try:
+        client = get_qdrant_client()
+        client.add(
+            collection_name=settings.rag_collection_name,
+            documents=chunks,
+            metadata=metadata,
+            ids=ids,
+        )
+    except Exception:
+        return len(chunks)
     return len(chunks)
 
 
 def retrieve_chunks(document_id: str, question: str) -> list[dict[str, object]]:
     """Run similarity search over the current document's indexed chunks."""
-    client = get_qdrant_client()
-    matches = client.query(
-        collection_name=settings.rag_collection_name,
-        query_text=question,
-        query_filter=Filter(
-            must=[
-                FieldCondition(
-                    key="document_id",
-                    match=MatchValue(value=document_id),
-                )
-            ]
-        ),
-        limit=settings.rag_top_k,
-    )
+    try:
+        client = get_qdrant_client()
+        matches = client.query(
+            collection_name=settings.rag_collection_name,
+            query_text=question,
+            query_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="document_id",
+                        match=MatchValue(value=document_id),
+                    )
+                ]
+            ),
+            limit=settings.rag_top_k,
+        )
+    except Exception:
+        return _retrieve_fallback_chunks(document_id, question)
 
     retrieved: list[dict[str, object]] = []
     for match in matches:
@@ -141,7 +201,11 @@ def retrieve_chunks(document_id: str, question: str) -> list[dict[str, object]]:
                 "chunk_index": metadata.get("chunk_index"),
             }
         )
-    return retrieved
+
+    if retrieved:
+        return retrieved
+
+    return _retrieve_fallback_chunks(document_id, question)
 
 
 def _get_groq_client():
