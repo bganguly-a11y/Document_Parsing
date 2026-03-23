@@ -14,6 +14,46 @@ from PIL import Image, ImageOps
 from config import get_settings
 
 
+def _read_field(item, field_name: str):
+    if isinstance(item, dict):
+        return item.get(field_name)
+    return getattr(item, field_name, None)
+
+
+def _extract_lines_from_result(result) -> list[str]:
+    lines: list[str] = []
+    if not isinstance(result, list):
+        return lines
+
+    for item in result:
+        texts = _read_field(item, "rec_texts") or []
+        scores = _read_field(item, "rec_scores") or []
+
+        if texts:
+            for i, text in enumerate(texts):
+                if not text or not str(text).strip():
+                    continue
+                score = scores[i] if i < len(scores) else None
+                if score is None or float(score) >= 0.3:
+                    lines.append(str(text).strip())
+            continue
+
+        # Some PaddleOCR builds return nested structures from `ocr(...)`.
+        if isinstance(item, list):
+            for entry in item:
+                if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                    continue
+                text_info = entry[1]
+                if not isinstance(text_info, (list, tuple)) or not text_info:
+                    continue
+                text = text_info[0]
+                score = text_info[1] if len(text_info) > 1 else None
+                if text and str(text).strip() and (score is None or float(score) >= 0.3):
+                    lines.append(str(text).strip())
+
+    return lines
+
+
 def _get_paddle_ocr():
     settings = get_settings()
     cache_dir = (
@@ -32,6 +72,8 @@ def _get_paddle_ocr():
     use_angle_cls = bool(getattr(settings, "paddleocr_use_angle_cls", True))
     return PaddleOCR(
         lang=lang,
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
         use_textline_orientation=use_angle_cls,
         device="cpu",
         enable_hpi=False,
@@ -57,21 +99,8 @@ def _extract(pdf_path: Path, out_path: Path) -> None:
             img = Image.open(io.BytesIO(img_data))
             img = ImageOps.autocontrast(ImageOps.grayscale(img)).convert("RGB")
             np_img = np.asarray(img)[:, :, ::-1]
-            result = ocr.predict(np_img)
-
-            lines: list[str] = []
-            if isinstance(result, list):
-                for item in result:
-                    if not isinstance(item, dict):
-                        continue
-                    texts = item.get("rec_texts") or []
-                    scores = item.get("rec_scores") or []
-                    for i, text in enumerate(texts):
-                        if not text or not str(text).strip():
-                            continue
-                        score = scores[i] if i < len(scores) else None
-                        if score is None or score >= 0.3:
-                            lines.append(str(text).strip())
+            result = ocr.predict(np_img) if hasattr(ocr, "predict") else ocr.ocr(np_img)
+            lines = _extract_lines_from_result(result)
 
             text_parts.append("\n".join(lines))
     finally:
