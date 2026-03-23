@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     paddleocr_use_angle_cls: bool = True
     paddle_pdx_cache_home: str | None = None
     paddle_pdx_disable_model_source_check: bool = True
+    ocr_render_dpi: int = 150
+    ocr_max_pages: int = 8
+    ocr_timeout_seconds: int = 90
     allowed_extensions: set[str] = {".pdf"}
     max_upload_size_mb: int = 10
     rag_embedding_model: str = "BAAI/bge-small-en"

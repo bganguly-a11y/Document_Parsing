@@ -1,47 +1,13 @@
 """PDF text extraction service - uses PyMuPDF for text, PaddleOCR for image-based PDFs."""
 import io
-from functools import lru_cache
 import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import fitz  # PyMuPDF
-from PIL import Image, ImageOps
-import numpy as np
 from PyPDF2 import PdfReader
 from config import get_settings
-
-@lru_cache(maxsize=1)
-def _get_paddle_ocr():
-    """
-    Lazily construct the PaddleOCR engine once.
-
-    Note: model weights may be downloaded on first use.
-    """
-    settings = get_settings()
-    # PaddleOCR (via PaddleX) writes cache/model files under ~/.paddlex by default.
-    # In restricted environments that may be non-writable; use a project-local cache instead.
-    cache_dir = (
-        Path(settings.paddle_pdx_cache_home).expanduser().resolve()
-        if getattr(settings, "paddle_pdx_cache_home", None)
-        else (Path(__file__).resolve().parents[1] / ".cache" / "paddlex")
-    )
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_dir))
-    if getattr(settings, "paddle_pdx_disable_model_source_check", True):
-        os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-
-    # Import lazily so the API can still start up even if PaddleOCR isn't installed yet.
-    from paddleocr import PaddleOCR  # type: ignore
-
-    lang = (getattr(settings, "paddleocr_lang", None) or "en").strip() or "en"
-    use_angle_cls = bool(getattr(settings, "paddleocr_use_angle_cls", True))
-    # PaddleOCR v3 uses `use_textline_orientation` for angle correction.
-    # Force CPU and disable HPI to avoid privileged sysctl calls in restricted environments.
-    return PaddleOCR(
-        lang=lang,
-        use_textline_orientation=use_angle_cls,
-        device="cpu",
-        enable_hpi=False,
-    )
 
 # Minimum text length to consider PDF as "text-based" (vs image/scanned)
 MIN_TEXT_THRESHOLD = 50
@@ -74,40 +40,51 @@ def _extract_text_pymupdf(pdf_bytes: bytes) -> str:
 
 def _extract_text_ocr(pdf_bytes: bytes) -> str:
     """Extract text using PaddleOCR for image/scanned PDFs."""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    text_parts = []
-    ocr = _get_paddle_ocr()
-    for page in doc:
-        # Balance accuracy vs speed for server-side OCR.
-        pix = page.get_pixmap(dpi=200)
-        img_data = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_data))
-        # Light pre-processing improves OCR on scanned PDFs.
-        img = ImageOps.autocontrast(ImageOps.grayscale(img)).convert("RGB")
+    settings = get_settings()
 
-        # PaddleOCR expects a numpy image; use BGR channel order.
-        np_img = np.asarray(img)[:, :, ::-1]
-        result = ocr.predict(np_img)
+    with tempfile.TemporaryDirectory(prefix="ocr_") as temp_dir:
+        temp_path = Path(temp_dir)
+        pdf_path = temp_path / "input.pdf"
+        out_path = temp_path / "output.txt"
+        pdf_path.write_bytes(pdf_bytes)
 
-        lines: list[str] = []
-        # PaddleOCR v3 returns a list of dicts; recognized strings are in `rec_texts`.
-        if isinstance(result, list):
-            for item in result:
-                if not isinstance(item, dict):
-                    continue
-                texts = item.get("rec_texts") or []
-                scores = item.get("rec_scores") or []
-                for i, text in enumerate(texts):
-                    if not text or not str(text).strip():
-                        continue
-                    score = scores[i] if i < len(scores) else None
-                    if score is None or score >= 0.3:
-                        lines.append(str(text).strip())
+        env = os.environ.copy()
+        cache_dir = (
+            Path(settings.paddle_pdx_cache_home).expanduser().resolve()
+            if getattr(settings, "paddle_pdx_cache_home", None)
+            else (Path(__file__).resolve().parents[1] / ".cache" / "paddlex")
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env.setdefault("PADDLE_PDX_CACHE_HOME", str(cache_dir))
+        if getattr(settings, "paddle_pdx_disable_model_source_check", True):
+            env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
-        page_text = "\n".join(lines)
-        text_parts.append(page_text)
-    doc.close()
-    return "\n".join(text_parts).strip()
+        command = [
+            sys.executable,
+            "-m",
+            "services.paddle_ocr_worker",
+            str(pdf_path),
+            str(out_path),
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=max(int(getattr(settings, "ocr_timeout_seconds", 90)), 15),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("PaddleOCR timed out on this PDF in the deployed environment.") from exc
+
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            detail = stderr.splitlines()[-1] if stderr else f"exit code {completed.returncode}"
+            raise RuntimeError(f"PaddleOCR failed: {detail}")
+
+        return out_path.read_text(encoding="utf-8").strip()
 
 
 def _extract_text_pypdf2(pdf_bytes: bytes) -> str:
