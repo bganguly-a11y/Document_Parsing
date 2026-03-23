@@ -57,7 +57,7 @@ def reset_rag_store() -> None:
 
 
 @lru_cache(maxsize=1)
-def get_qdrant_client() -> QdrantClient:
+def get_qdrant_client():
     """Return a local Qdrant client configured with a free embedding model."""
     if QdrantClient is None:
         raise RuntimeError("qdrant-client is not installed in the current environment.")
