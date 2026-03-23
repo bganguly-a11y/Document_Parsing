@@ -152,6 +152,16 @@
   font-family: 'JetBrains Mono', monospace;
 }
 
+.badge-success {
+  background: rgba(52, 211, 153, 0.18);
+  color: var(--success);
+}
+
+.badge-muted {
+  background: rgba(161, 161, 170, 0.15);
+  color: var(--text-secondary);
+}
+
 .text-box {
   white-space: pre-wrap;
   word-break: break-word;
@@ -186,4 +196,58 @@
 .lang-select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.card-copy {
+  margin: 0 0 1rem;
+  color: var(--text-secondary);
+}
+
+.hint-msg {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  color: var(--text-secondary);
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.question-input {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  line-height: 1.6;
+}
+
+.question-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.rag-context {
+  margin-top: 1rem;
+}
+
+.rag-context h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+}
+
+.context-snippet {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
 }

@@ -30,3 +30,6 @@ build/
 
 # PaddleOCR / PaddleX cache (models, temp files)
 backend/.cache/
+
+# Uploaded PDF files
+backend/uploads/

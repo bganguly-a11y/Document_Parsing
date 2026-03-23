@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { uploadPdf, translate, summarize, getLanguages } from './api'
+import { uploadPdf, translate, summarize, getLanguages, askQuestion } from './api'
 import './App.css'
 
 function App() {
@@ -13,6 +13,9 @@ function App() {
   const [languages, setLanguages] = useState({})
   const [translateLoading, setTranslateLoading] = useState(false)
   const [summaryLoading, setSummaryLoading] = useState(false)
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState(null)
+  const [askLoading, setAskLoading] = useState(false)
 
   useEffect(() => {
     getLanguages().then((data) => setLanguages(data.languages)).catch(() => {})
@@ -24,6 +27,8 @@ function App() {
     setExtracted(null)
     setTranslated(null)
     setSummary(null)
+    setQuestion('')
+    setAnswer(null)
 
     if (!chosen) {
       setFile(null)
@@ -56,6 +61,8 @@ function App() {
     setExtracted(null)
     setTranslated(null)
     setSummary(null)
+    setQuestion('')
+    setAnswer(null)
     try {
       const data = await uploadPdf(file)
       setExtracted(data)
@@ -98,11 +105,27 @@ function App() {
     }
   }
 
+  const handleAskQuestion = async () => {
+    if (!extracted || !question.trim()) return
+    setAskLoading(true)
+    setAnswer(null)
+    setFileError('')
+    try {
+      const data = await askQuestion(extracted.document_id, question.trim())
+      setAnswer(data)
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message || 'Question answering failed'
+      setFileError(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    } finally {
+      setAskLoading(false)
+    }
+  }
+
   return (
     <div className="app">
       <header className="header">
         <h1>Document Parsing</h1>
-        <p>Upload a PDF to extract text and translate to your preferred language</p>
+        <p>Upload a PDF to extract text, translate, summarize, and ask grounded questions</p>
       </header>
 
       <main className="main">
@@ -140,6 +163,9 @@ function App() {
             <div className="card">
               <h2>Extracted Text</h2>
               <span className="badge">{extracted.extraction_method}</span>
+              <span className={`badge ${extracted.rag_ready ? 'badge-success' : 'badge-muted'}`}>
+                {extracted.rag_ready ? `RAG ready • ${extracted.rag_chunk_count} chunks` : 'RAG unavailable'}
+              </span>
               <div className="text-box extracted">{extracted.extracted_text}</div>
             </div>
 
@@ -171,6 +197,47 @@ function App() {
                 {translateLoading ? 'Translating…' : 'Translate'}
               </button>
             </div>
+
+            <div className="card">
+              <h2>Ask Questions About This PDF</h2>
+              <p className="card-copy">
+                Ask a question and the application will retrieve the most relevant document chunks before generating an answer.
+              </p>
+              {!extracted.rag_ready && extracted.rag_error && (
+                <div className="hint-msg">{extracted.rag_error}</div>
+              )}
+              <textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                className="question-input"
+                // placeholder="Example: What are the key obligations mentioned in this document?"
+                rows={4}
+              />
+              <button
+                className="btn btn-secondary"
+                onClick={handleAskQuestion}
+                disabled={!question.trim() || askLoading || !extracted.rag_ready}
+              >
+                {askLoading ? 'Searching and answering…' : 'Ask PDF'}
+              </button>
+            </div>
+
+            {answer && (
+              <div className="card">
+                <h2>RAG Answer</h2>
+                <div className="text-box summary">{answer.answer}</div>
+                {answer.retrieved_chunks?.length > 0 && (
+                  <div className="rag-context">
+                    <h3>Retrieved Context</h3>
+                    {answer.retrieved_chunks.map((chunk, index) => (
+                      <div key={`${index}-${chunk.slice(0, 24)}`} className="context-snippet">
+                        {chunk}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {summary && (
               <div className="card">

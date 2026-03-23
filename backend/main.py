@@ -8,6 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from services.pdf_extractor import extract_text
+from services.rag_service import (
+    answer_question,
+    index_document,
+    prepare_rag_directories,
+    reset_rag_store,
+    retrieve_chunks,
+)
 from services.translator import translate_text, SUPPORTED_LANGUAGES
 from services.summarizer import summarize_text
 from config import get_settings
@@ -34,6 +41,9 @@ class ExtractedTextResponse(BaseModel):
     filename: str
     extracted_text: str
     extraction_method: str
+    rag_ready: bool
+    rag_chunk_count: int
+    rag_error: str | None = None
 
 
 class TranslateRequest(BaseModel):
@@ -70,6 +80,21 @@ class DocumentResponse(BaseModel):
     translated_language: str | None
     translated_text: str | None
     summary_text: str | None
+    rag_ready: bool
+    rag_chunk_count: int
+    rag_error: str | None = None
+
+
+class QuestionAnswerRequest(BaseModel):
+    document_id: str
+    question: str
+
+
+class QuestionAnswerResponse(BaseModel):
+    document_id: str
+    question: str
+    answer: str
+    retrieved_chunks: list[str]
 
 
 @dataclass
@@ -83,6 +108,9 @@ class Document:
     translated_language: str | None = None
     translated_text: str | None = None
     summary_text: str | None = None
+    rag_ready: bool = False
+    rag_chunk_count: int = 0
+    rag_error: str | None = None
 
 
 # Simple in-memory document store (resets on app restart).
@@ -113,6 +141,8 @@ def root():
 @app.on_event("startup")
 def _startup() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    prepare_rag_directories()
+    reset_rag_store()
     document_store.clear()
 
 
@@ -182,6 +212,16 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content)
 
+    try:
+        doc.rag_chunk_count = index_document(doc.id, doc.filename, extracted_text)
+        doc.rag_ready = doc.rag_chunk_count > 0
+        if not doc.rag_ready:
+            doc.rag_error = "The PDF did not contain enough extracted text to build a RAG index."
+    except Exception as exc:
+        doc.rag_ready = False
+        doc.rag_chunk_count = 0
+        doc.rag_error = str(exc)
+
     document_store[doc.id] = doc
 
     return ExtractedTextResponse(
@@ -189,6 +229,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         filename=file.filename,
         extracted_text=extracted_text,
         extraction_method=extraction_method,
+        rag_ready=doc.rag_ready,
+        rag_chunk_count=doc.rag_chunk_count,
+        rag_error=doc.rag_error,
     )
 
 
@@ -262,4 +305,45 @@ def get_document(document_id: str):
         translated_language=doc.translated_language,
         translated_text=doc.translated_text,
         summary_text=doc.summary_text,
+        rag_ready=doc.rag_ready,
+        rag_chunk_count=doc.rag_chunk_count,
+        rag_error=doc.rag_error,
+    )
+
+
+@app.post("/api/ask", response_model=QuestionAnswerResponse)
+async def ask_document_question(body: QuestionAnswerRequest):
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+    doc = fetch_doc_or_404(body.document_id)
+    if not doc.rag_ready:
+        if doc.extracted_text.strip():
+            try:
+                doc.rag_chunk_count = index_document(doc.id, doc.filename, doc.extracted_text)
+                doc.rag_ready = doc.rag_chunk_count > 0
+                doc.rag_error = None if doc.rag_ready else "No searchable chunks were created for this PDF."
+            except Exception as exc:
+                doc.rag_error = str(exc)
+        if not doc.rag_ready:
+            raise HTTPException(
+                status_code=503,
+                detail=doc.rag_error or "This PDF is not ready for question answering yet.",
+            )
+
+    chunks = retrieve_chunks(doc.id, question)
+    try:
+        answer = answer_question(question, chunks)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        detail = str(exc) if str(exc) else "Question answering failed. Check GROQ_API_KEY and try again."
+        raise HTTPException(status_code=502, detail=detail)
+
+    return QuestionAnswerResponse(
+        document_id=doc.id,
+        question=question,
+        answer=answer,
+        retrieved_chunks=[str(chunk["text"]) for chunk in chunks],
     )

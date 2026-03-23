@@ -68,3 +68,13 @@ export async function summarize(text, documentId = null) {
     }),
   })
 }
+
+export async function askQuestion(documentId, question) {
+  return request('/ask', {
+    method: 'POST',
+    body: JSON.stringify({
+      document_id: documentId,
+      question,
+    }),
+  })
+}
