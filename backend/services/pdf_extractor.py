@@ -1,4 +1,5 @@
 """PDF text extraction service - uses PyMuPDF for text, PaddleOCR for image-based PDFs."""
+import base64
 import io
 import os
 from pathlib import Path
@@ -9,8 +10,24 @@ import fitz  # PyMuPDF
 from PyPDF2 import PdfReader
 from config import get_settings
 
+try:
+    from groq import Groq
+except ImportError:  # pragma: no cover - handled at runtime
+    Groq = None  # type: ignore[assignment]
+
 # Minimum text length to consider PDF as "text-based" (vs image/scanned)
 MIN_TEXT_THRESHOLD = 50
+
+
+def _get_groq_client():
+    settings = get_settings()
+    if Groq is None:
+        raise RuntimeError("groq package not installed.")
+
+    api_key = settings.groq_api_key or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not set.")
+    return Groq(api_key=api_key)
 
 
 def _get_text_percentage(doc: fitz.Document) -> float:
@@ -96,6 +113,60 @@ def _extract_text_pypdf2(pdf_bytes: bytes) -> str:
     return "\n".join(text_parts).strip()
 
 
+def _extract_text_groq_vision(pdf_bytes: bytes) -> str:
+    """Fallback OCR using a Groq vision model on rendered PDF page images."""
+    settings = get_settings()
+    client = _get_groq_client()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text_parts: list[str] = []
+    dpi = max(int(getattr(settings, "groq_ocr_render_dpi", 120)), 72)
+    max_pages = max(int(getattr(settings, "groq_ocr_max_pages", 4)), 1)
+
+    try:
+        for page_index, page in enumerate(doc):
+            if page_index >= max_pages:
+                break
+
+            pix = page.get_pixmap(dpi=dpi)
+            image_bytes = pix.tobytes("jpeg")
+            image_b64 = base64.b64encode(image_bytes).decode("ascii")
+            response = client.chat.completions.create(
+                model=settings.groq_vision_model,
+                temperature=0,
+                max_tokens=1200,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are performing OCR on a PDF page image. "
+                            "Extract only the visible text from the page. "
+                            "Preserve useful line breaks. "
+                            "Do not summarize, explain, or invent missing text."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"Extract the text from page {page_index + 1}."},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                            },
+                        ],
+                    },
+                ],
+            )
+            if not response.choices:
+                continue
+            page_text = (response.choices[0].message.content or "").strip()
+            if page_text:
+                text_parts.append(page_text)
+    finally:
+        doc.close()
+
+    return "\n\n".join(text_parts).strip()
+
+
 def extract_text(pdf_bytes: bytes, filename: str) -> tuple[str, str]:
     """
     Extract text from PDF. Uses OCR for image-based PDFs, PyMuPDF/PyPDF2 for text-based.
@@ -109,11 +180,16 @@ def extract_text(pdf_bytes: bytes, filename: str) -> tuple[str, str]:
         try:
             text = _extract_text_ocr(pdf_bytes)
             method = "paddleocr"
-        except Exception as e:
-            # Fallback to PyPDF2 if OCR fails
-            text = _extract_text_pypdf2(pdf_bytes)
-            # Keep the failure visible to help diagnose missing models/deps.
-            method = f"pypdf2 (ocr failed: {type(e).__name__})"
+        except Exception as ocr_error:
+            try:
+                text = _extract_text_groq_vision(pdf_bytes)
+                method = "groq-vision-ocr"
+            except Exception as groq_error:
+                text = _extract_text_pypdf2(pdf_bytes)
+                method = (
+                    f"pypdf2 (ocr failed: {type(ocr_error).__name__}; "
+                    f"groq fallback failed: {type(groq_error).__name__})"
+                )
     else:
         text = text_pymupdf
         method = "pymupdf"

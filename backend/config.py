@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     ocr_render_dpi: int = 150
     ocr_max_pages: int = 8
     ocr_timeout_seconds: int = 90
+    groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    groq_ocr_max_pages: int = 4
+    groq_ocr_render_dpi: int = 120
     allowed_extensions: set[str] = {".pdf"}
     max_upload_size_mb: int = 10
     rag_embedding_model: str = "BAAI/bge-small-en"
