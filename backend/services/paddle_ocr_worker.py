@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _read_field(item, field_name: str):
@@ -72,6 +75,8 @@ def _get_paddle_ocr():
     use_angle_cls = bool(getattr(settings, "paddleocr_use_angle_cls", True))
     return PaddleOCR(
         lang=lang,
+        text_detection_model_name=getattr(settings, "paddleocr_text_detection_model_name", None),
+        text_recognition_model_name=getattr(settings, "paddleocr_text_recognition_model_name", None),
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=use_angle_cls,
@@ -116,8 +121,12 @@ def main() -> int:
 
     pdf_path = Path(sys.argv[1]).resolve()
     out_path = Path(sys.argv[2]).resolve()
-    _extract(pdf_path, out_path)
-    return 0
+    try:
+        _extract(pdf_path, out_path)
+        return 0
+    except Exception:
+        logger.exception("PaddleOCR worker failed for %s", pdf_path.name)
+        raise
 
 
 if __name__ == "__main__":

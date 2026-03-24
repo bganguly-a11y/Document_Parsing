@@ -1,6 +1,7 @@
 """PDF text extraction service - uses PyMuPDF for text, PaddleOCR for image-based PDFs."""
 import base64
 import io
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -17,6 +18,7 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 # Minimum text length to consider PDF as "text-based" (vs image/scanned)
 MIN_TEXT_THRESHOLD = 50
+logger = logging.getLogger(__name__)
 
 
 def _get_groq_client():
@@ -181,10 +183,12 @@ def extract_text(pdf_bytes: bytes, filename: str) -> tuple[str, str]:
             text = _extract_text_ocr(pdf_bytes)
             method = "paddleocr"
         except Exception as ocr_error:
+            logger.exception("PaddleOCR extraction failed for %s", filename)
             try:
                 text = _extract_text_groq_vision(pdf_bytes)
                 method = "groq-vision-ocr"
             except Exception as groq_error:
+                logger.exception("Groq vision OCR fallback failed for %s", filename)
                 text = _extract_text_pypdf2(pdf_bytes)
                 method = (
                     f"pypdf2 (ocr failed: {type(ocr_error).__name__}; "
