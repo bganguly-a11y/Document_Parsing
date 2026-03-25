@@ -8,7 +8,7 @@ The current stack is:
 
 - Frontend: React + Vite
 - Backend: FastAPI + Python
-- PDF extraction: PyMuPDF, PyPDF2, PaddleOCR
+- PDF extraction: PyMuPDF, PaddleOCR subprocess worker, Groq vision fallback, PyPDF2
 - Translation: `deep-translator`
 - Summarization and question answering: Groq LLM
 - Embeddings: `BAAI/bge-small-en`
@@ -27,7 +27,8 @@ Only PDF files are allowed, and file size is limited to 10 MB.
 └─────────────────┘     └──────────────────┘
          │                         │
          │                         ├── PyMuPDF / PyPDF2
-         │                         ├── PaddleOCR
+         │                         ├── PaddleOCR worker
+         │                         ├── Groq vision OCR fallback
          │                         ├── deep-translator
          │                         ├── Groq LLM
          │                         ├── FastEmbed
@@ -71,8 +72,9 @@ The backend automatically chooses the extraction strategy:
 | PDF type | Condition | Extraction method |
 |---|---|---|
 | Text-based PDF | extracted text length >= 50 chars | `PyMuPDF` |
-| Image/scanned PDF | extracted text length < 50 chars | `PaddleOCR` |
-| OCR fallback failure | OCR throws error | `PyPDF2` |
+| Image/scanned PDF | extracted text length < 50 chars | `PaddleOCR` subprocess worker |
+| PaddleOCR failure | OCR throws error | `Groq vision OCR` |
+| Final fallback failure | PaddleOCR and Groq OCR both fail | `PyPDF2` |
 
 ### 3. Translation
 
@@ -92,12 +94,14 @@ After a PDF is uploaded:
 
 - extracted text is split into overlapping chunks,
 - embeddings are generated using `BAAI/bge-small-en`,
-- embeddings are stored in embedded Qdrant,
+- embeddings are stored in embedded Qdrant when available,
 - users can ask questions about that specific PDF,
 - the backend retrieves the most relevant chunks,
 - the LLM answers using only the retrieved context.
 
 The response is designed to be a short, grounded paragraph.
+
+If embedded Qdrant is unavailable in a hosted environment, the backend keeps a lightweight in-memory fallback index so question answering can still work for the current app session.
 
 ---
 
@@ -130,6 +134,7 @@ Parsing_Document_Application/
 │   ├── uploads/
 │   └── services/
 │       ├── pdf_extractor.py
+│       ├── paddle_ocr_worker.py
 │       ├── translator.py
 │       ├── summarizer.py
 │       └── rag_service.py
@@ -158,6 +163,7 @@ Parsing_Document_Application/
 - Python 3.11+
 - Groq API key for summarization and RAG answers
 - PaddleOCR model download access on first OCR run
+- Groq vision model access for scanned-PDF OCR fallback in deployment
 
 ### Install
 
@@ -174,9 +180,18 @@ Create `backend/.env`:
 
 ```env
 PADDLEOCR_LANG=en
+PADDLEOCR_USE_ANGLE_CLS=false
+PADDLEOCR_TEXT_DETECTION_MODEL_NAME=PP-OCRv5_mobile_det
+PADDLEOCR_TEXT_RECOGNITION_MODEL_NAME=en_PP-OCRv5_mobile_rec
 PADDLE_PDX_CACHE_HOME=
 PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=true
+OCR_RENDER_DPI=110
+OCR_MAX_PAGES=4
+OCR_TIMEOUT_SECONDS=45
 GROQ_API_KEY=your-groq-api-key
+GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+GROQ_OCR_MAX_PAGES=2
+GROQ_OCR_RENDER_DPI=100
 
 # Optional RAG tuning
 RAG_EMBEDDING_MODEL=BAAI/bge-small-en
@@ -250,6 +265,12 @@ Uploads a PDF, extracts text, stores the file, and prepares the RAG index.
   "rag_error": null
 }
 ```
+
+`extraction_method` may also be one of:
+
+- `paddleocr`
+- `groq-vision-ocr`
+- `pypdf2 (ocr failed: ...; groq fallback failed: ...)`
 
 **Errors**
 
@@ -409,7 +430,11 @@ Make sure these are true:
 
 ### Vercel frontend
 
-Your frontend should continue sending API requests to `/api`, and Vercel should rewrite those requests to the Render backend.
+For local development, the frontend can send API requests to `/api`.
+
+For production, the frontend is configured to call the Render backend directly unless `VITE_API_BASE_URL` overrides it.
+
+You can still keep a Vercel rewrite if you want one, but it is no longer required for production requests.
 
 Example `vercel.json`:
 
@@ -426,7 +451,7 @@ Example `vercel.json`:
 
 ### CORS
 
-If you directly call the backend from a different frontend origin, update `allow_origins` in `backend/main.py`.
+The backend CORS configuration now allows localhost development origins plus Vercel-hosted frontend origins. If you use a different frontend origin, update `allow_origins` and `allow_origin_regex` in `backend/main.py`.
 
 ---
 
